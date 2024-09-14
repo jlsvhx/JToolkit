@@ -34,12 +34,12 @@ func calculateMD5(filePath string) (string, error) {
 	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
-func getFileModificationTime(filePath string) (time.Time, error) {
+func getFileModificationTime(filePath string) (string, error) {
 	stat, err := os.Stat(filePath)
 	if err != nil {
-		return time.Time{}, err
+		return "", err
 	}
-	return stat.ModTime(), nil
+	return stat.ModTime().Format(time.DateTime), nil
 }
 
 func initializeDB(dbPath string) error {
@@ -146,14 +146,12 @@ func dealSingleFile(wg *sync.WaitGroup, taskQueue, resultQueue chan string, main
 			resultQueue <- fmt.Sprintf("未找到对应的MD5记录，已添加: %s", filePath)
 			dbLock.Lock()
 			_, _ = db.Exec(`INSERT INTO files_md5 (file_path, md5, modification_time) VALUES (?, ?, ?)`,
-				relativePath, currentMD5, currentModTime.Format(time.RFC3339))
+				relativePath, currentMD5, currentModTime)
 			dbLock.Unlock()
 		} else if err != nil {
 			resultQueue <- fmt.Sprintf("查询数据库失败: %v", err)
 		} else {
-			currentModTimeStr := currentModTime.Format(time.RFC3339)
-			fmt.Println(currentModTimeStr, dbModTimeStr)
-			if currentModTimeStr == dbModTimeStr {
+			if currentModTime == dbModTimeStr {
 				if currentMD5 == dbMD5 {
 					resultQueue <- fmt.Sprintf("MD5与数据库一致: %s", filePath)
 				} else {
@@ -162,7 +160,7 @@ func dealSingleFile(wg *sync.WaitGroup, taskQueue, resultQueue chan string, main
 			} else {
 				dbLock.Lock()
 				_, _ = db.Exec(`UPDATE files_md5 SET md5 = ?, modification_time = ? WHERE file_path = ?`,
-					currentMD5, currentModTime.Format(time.RFC3339), relativePath)
+					currentMD5, currentModTime, relativePath)
 				dbLock.Unlock()
 				resultQueue <- fmt.Sprintf("文件已修改，MD5已更新: %s", filePath)
 			}
