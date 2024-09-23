@@ -14,6 +14,12 @@ func InputFolderAndCheck(folderPath *string) error {
 		return err
 	}
 
+	if *folderPath == "src" {
+		cwd, _ := os.Getwd()
+		*folderPath = cwd
+		fmt.Println("使用当前工作目录:", cwd)
+	}
+
 	// 检查输入的路径是否是一个有效的文件夹
 	info, err := os.Stat(*folderPath)
 	if os.IsNotExist(err) {

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"crypto/md5"
 	"database/sql"
 	"encoding/hex"
@@ -176,9 +177,9 @@ func main() {
 	}
 	verifyMD5InFolder(folder, 10)
 	fmt.Println("按 Enter 键退出...")
-	var tmp string
-	_, err2 := fmt.Scan(&tmp)
-	if err2 != nil {
-		return
-	}
+
+	reader := bufio.NewReader(os.Stdin)
+	input, _ := reader.ReadString('\n')
+	input, _ = reader.ReadString('\n')
+	fmt.Println(input)
 }
