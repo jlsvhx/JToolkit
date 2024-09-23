@@ -7,7 +7,7 @@ import (
 
 func InputFolderAndCheck(folderPath *string) error {
 
-	fmt.Println("请输入文件夹路径:")
+	fmt.Println("请输入文件夹路径（src代表当前工作路径）:")
 	_, err := fmt.Scan(folderPath)
 	if err != nil {
 		fmt.Println("读取输入失败:", err)
