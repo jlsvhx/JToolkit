@@ -87,6 +87,13 @@ func verifyMD5InFolder(mainDirectory string, threadCount int) {
 	taskQueue := make(chan string, 10)
 	resultQueue := make(chan string, 10)
 
+	start := time.Now()
+	defer func() {
+		end := time.Now()
+		duration := end.Sub(start)
+		fmt.Println("\n总耗时为", duration)
+	}()
+
 	fmt.Println("\n初始化数据库\n")
 	dbPath := filepath.Join(mainDirectory, dbName)
 	if err := initializeDB(dbPath); err != nil {
