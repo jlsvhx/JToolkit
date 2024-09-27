@@ -6,8 +6,9 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"fmt"
+	"goToolkit/Bar"
 	"goToolkit/jmath"
-	jpath "goToolkit/jpath"
+	"goToolkit/jpath"
 	"io"
 	"os"
 	"path/filepath"
@@ -17,7 +18,7 @@ import (
 	_ "github.com/mattn/go-sqlite3"
 )
 
-const dbName = "file_integrity_check.db"
+const dbName = "file_integrity_check_by_go.db"
 
 var excludeFileNames = []string{dbName}
 var dbLock sync.Mutex
@@ -102,6 +103,8 @@ func verifyMD5InFolder(mainDirectory string, threadCount int) {
 		return
 	}
 
+	count := countFilesInDirectory(mainDirectory)
+	b := Bar.NewBar(0, count)
 	go pushFilesToProcess(mainDirectory, taskQueue)
 
 	var wg sync.WaitGroup
@@ -118,8 +121,9 @@ func verifyMD5InFolder(mainDirectory string, threadCount int) {
 		go dealSingleFile(&wg, taskQueue, resultQueue, mainDirectory, db)
 	}
 	go func() {
-		for message := range resultQueue {
-			fmt.Println(message)
+		for mess := range resultQueue {
+			//fmt.Println(message)
+			b.Add(1, mess)
 		}
 	}()
 	wg.Wait()
@@ -127,6 +131,23 @@ func verifyMD5InFolder(mainDirectory string, threadCount int) {
 	time.Sleep(1)
 	close(resultQueue)
 	fmt.Println("\n**MD5计算和验证任务完成**")
+}
+
+func countFilesInDirectory(directory string) int {
+	count := 0
+	filepath.Walk(directory, func(path string, info os.FileInfo, err error) error {
+		if err != nil || info.IsDir() {
+			return err
+		}
+		for _, exclude := range excludeFileNames {
+			if info.Name() == exclude || filepath.Ext(info.Name()) == ".sfv" {
+				return nil
+			}
+		}
+		count++
+		return nil
+	})
+	return count
 }
 
 func dealSingleFile(wg *sync.WaitGroup, taskQueue, resultQueue chan string, mainDirectory string, db *sql.DB) {
