@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"fmt"
+	"goToolkit/jmath"
 	jpath "goToolkit/jpath"
 	"io"
 	"os"
@@ -90,11 +91,11 @@ func verifyMD5InFolder(mainDirectory string, threadCount int) {
 	start := time.Now()
 	defer func() {
 		end := time.Now()
-		duration := end.Sub(start)
-		fmt.Println("\n总耗时为", duration)
+		seconds := end.Sub(start).Seconds()
+		fmt.Println("总耗时为", jmath.RoundWithPrecision(seconds, 2), "秒")
 	}()
 
-	fmt.Println("\n初始化数据库\n")
+	fmt.Println("初始化数据库")
 	dbPath := filepath.Join(mainDirectory, dbName)
 	if err := initializeDB(dbPath); err != nil {
 		fmt.Println("数据库初始化失败:", err)
@@ -111,7 +112,7 @@ func verifyMD5InFolder(mainDirectory string, threadCount int) {
 	}
 	defer db.Close() // 确保在函数结束时关闭连接
 
-	fmt.Println("\n开始处理任务队列\n")
+	fmt.Println("开始处理任务队列\n")
 	for i := 0; i < threadCount; i++ {
 		wg.Add(1)
 		go dealSingleFile(&wg, taskQueue, resultQueue, mainDirectory, db)
@@ -122,9 +123,10 @@ func verifyMD5InFolder(mainDirectory string, threadCount int) {
 		}
 	}()
 	wg.Wait()
+	// 确保以下输出在过程输出之后
+	time.Sleep(1)
 	close(resultQueue)
-
-	fmt.Println("\n**MD5计算和验证任务完成**\n")
+	fmt.Println("\n**MD5计算和验证任务完成**")
 }
 
 func dealSingleFile(wg *sync.WaitGroup, taskQueue, resultQueue chan string, mainDirectory string, db *sql.DB) {
