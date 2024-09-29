@@ -10,9 +10,12 @@ import (
 	"goToolkit/jmath"
 	"goToolkit/jpath"
 	"io"
+	"log"
 	"math/rand"
 	"os"
+	"path"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -70,20 +73,11 @@ func initializeDB(dbPath string) error {
 	return err
 }
 
-func pushFilesToProcess(db *sql.DB, mainDirectory string, taskQueue chan string, filters ...func(db *sql.DB, mainDirectory, fileName, filePath string) int) {
+func pushFilesToProcess(files []string, taskQueue chan<- string) {
 	defer close(taskQueue)
-	filepath.Walk(mainDirectory, func(path string, info os.FileInfo, err error) error {
-		if err != nil || info.IsDir() {
-			return err
-		}
-		for _, filter := range filters {
-			if filter(db, mainDirectory, info.Name(), path) == 1 {
-				return nil
-			}
-		}
-		taskQueue <- path
-		return nil
-	})
+	for _, filePath := range files {
+		taskQueue <- filePath
+	}
 }
 
 func verifyMD5InFolder(mainDirectory string, threadCount int, mode string) {
@@ -94,14 +88,31 @@ func verifyMD5InFolder(mainDirectory string, threadCount int, mode string) {
 	if mode == "2" {
 		filters = append(filters, filterExistFile)
 	} else if mode == "3" {
-		filters = append(filters, filterRandomFile)
+		filters = append(filters, genRandomFileFilter(20))
+	} else if mode == "4" {
+		filters = append(filters, genRandomFileFilter(10))
+	} else if mode == "5" {
+		filters = append(filters, genRandomFileFilter(2))
 	}
 
 	start := time.Now()
 	defer func() {
+		close(resultQueue)
 		end := time.Now()
 		seconds := end.Sub(start).Seconds()
-		fmt.Println("总耗时为", jmath.RoundWithPrecision(seconds, 2), "秒")
+		fmt.Println("\n****MD5计算和验证任务完成，总耗时为", jmath.RoundWithPrecision(seconds, 2), "秒****")
+		// 定义日志文件名
+		logFile := path.Join(mainDirectory, "verify.log")
+		// 打开文件，如果文件不存在则创建，追加内容
+		file, err := os.OpenFile(logFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0666)
+		if err != nil {
+			log.Fatal(err)
+		}
+		defer file.Close() // 确保在函数结束时关闭文件
+		// 创建一个新的日志记录器
+		logger := log.New(file, "INFO: ", log.Ldate|log.Ltime)
+		// 向日志文件中写入内容
+		logger.Println("工作模式：", mode)
 	}()
 
 	fmt.Println("初始化数据库")
@@ -117,9 +128,9 @@ func verifyMD5InFolder(mainDirectory string, threadCount int, mode string) {
 	}
 	defer db.Close() // 确保在函数结束时关闭连接
 
-	count := countFilesInDirectory(db, mainDirectory, filters...)
+	count, files := countFilesInDirectory(db, mainDirectory, filters...)
 	b := Bar.NewBar(0, count)
-	go pushFilesToProcess(db, mainDirectory, taskQueue, filters...)
+	go pushFilesToProcess(files, taskQueue)
 
 	var wg sync.WaitGroup
 
@@ -135,10 +146,7 @@ func verifyMD5InFolder(mainDirectory string, threadCount int, mode string) {
 		}
 	}()
 	wg.Wait()
-	// 确保以下输出在过程输出之后
 	time.Sleep(1)
-	close(resultQueue)
-	fmt.Println("\n**MD5计算和验证任务完成**")
 }
 
 // 需要过滤掉的返回1，需要处理的返回0
@@ -166,17 +174,20 @@ func filterExistFile(db *sql.DB, mainDirectory string, fileName string, filePath
 	return 1
 }
 
-func filterRandomFile(db *sql.DB, mainDirectory string, fileName string, filePath string) int {
-	ra := rand.Intn(10)
-	if ra < 1 {
-		return 0
-	} else {
-		return 1
+func genRandomFileFilter(max int) func(db *sql.DB, mainDirectory string, fileName string, filePath string) int {
+	return func(db *sql.DB, mainDirectory string, fileName string, filePath string) int {
+		ra := rand.Intn(max)
+		if ra == 0 {
+			return 0
+		} else {
+			return 1
+		}
 	}
 }
 
-func countFilesInDirectory(db *sql.DB, directory string, filters ...func(db *sql.DB, mainDirectory string, fileName string, filePath string) int) int {
+func countFilesInDirectory(db *sql.DB, directory string, filters ...func(db *sql.DB, mainDirectory string, fileName string, filePath string) int) (int, []string) {
 	count := 0
+	files := make([]string, 0)
 	filepath.Walk(directory, func(path string, info os.FileInfo, err error) error {
 		if err != nil || info.IsDir() {
 			return err
@@ -187,9 +198,10 @@ func countFilesInDirectory(db *sql.DB, directory string, filters ...func(db *sql
 			}
 		}
 		count++
+		files = append(files, path)
 		return nil
 	})
-	return count
+	return count, files
 }
 
 func dealSingleFile(wg *sync.WaitGroup, taskQueue, resultQueue chan string, mainDirectory string, db *sql.DB) {
@@ -247,7 +259,10 @@ func main() {
 	fmt.Println("请输入工作模式:")
 	fmt.Println(" 1. 全量扫描验证")
 	fmt.Println(" 2. 增量扫描验证")
-	fmt.Println(" 3. 随机抽取验证（1/10概率）")
+	fmt.Println(" 3. 随机抽取验证（1/20概率）")
+	fmt.Println(" 4. 随机抽取验证（1/10概率）")
+	fmt.Println(" 5. 随机抽取验证（1/2概率）")
+
 	_, err := fmt.Scan(&mode)
 	if err != nil {
 		fmt.Println("读取输入失败:", err)
@@ -266,5 +281,5 @@ func main() {
 	reader := bufio.NewReader(os.Stdin)
 	input, _ := reader.ReadString('\n')
 	input, _ = reader.ReadString('\n')
-	fmt.Println(input)
+	input = strings.TrimSpace(input)
 }
