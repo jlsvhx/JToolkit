@@ -20,6 +20,11 @@ func InputFolderAndCheck(folderPath *string) error {
 		fmt.Println("使用当前工作目录:", cwd)
 	}
 
+	return CheckFolderLeagl(folderPath)
+}
+
+func CheckFolderLeagl(folderPath *string) error {
+
 	// 检查输入的路径是否是一个有效的文件夹
 	info, err := os.Stat(*folderPath)
 	if os.IsNotExist(err) {
@@ -30,6 +35,5 @@ func InputFolderAndCheck(folderPath *string) error {
 		fmt.Println("输入的路径不是一个文件夹:", *folderPath)
 		return err
 	}
-
 	return nil
 }

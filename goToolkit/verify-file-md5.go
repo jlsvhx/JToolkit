@@ -27,6 +27,17 @@ const dbName = "file_integrity_check_by_go.db"
 var excludeFileNames = []string{dbName}
 var dbLock sync.Mutex
 
+type opRecord struct {
+	message      string
+	relativePath string
+	// 0 其他错误
+	// 1 与数据库md5相同
+	// 2 文件存在修改，更新md5
+	// 3 文件损坏，md5错误
+	// 4 新增文件，添加md5
+	status int
+}
+
 func calculateMD5(filePath string) (string, error) {
 	var h = md5.New()
 	f, err := os.Open(filePath)
@@ -82,10 +93,17 @@ func pushFilesToProcess(files []string, taskQueue chan<- string) {
 
 func verifyMD5InFolder(mainDirectory string, threadCount int, mode string) {
 	taskQueue := make(chan string, 10)
-	resultQueue := make(chan string, 10)
+	resultQueue := make(chan opRecord, 10)
+	updateCount := 0
+	brokenCount := 0
+	addCount := 0
+	totalCount := 0
+	var brokenFiles []string
 
 	filters := []func(db *sql.DB, mainDirectory, fileName, filePath string) int{filterExcludeFileAndSfv}
-	if mode == "2" {
+	if mode == "1" {
+
+	} else if mode == "2" {
 		filters = append(filters, filterExistFile)
 	} else if mode == "3" {
 		filters = append(filters, genRandomFileFilter(20))
@@ -93,6 +111,9 @@ func verifyMD5InFolder(mainDirectory string, threadCount int, mode string) {
 		filters = append(filters, genRandomFileFilter(10))
 	} else if mode == "5" {
 		filters = append(filters, genRandomFileFilter(2))
+	} else {
+		fmt.Println("工作模式无效")
+		return
 	}
 
 	start := time.Now()
@@ -112,7 +133,10 @@ func verifyMD5InFolder(mainDirectory string, threadCount int, mode string) {
 		// 创建一个新的日志记录器
 		logger := log.New(file, "INFO: ", log.Ldate|log.Ltime)
 		// 向日志文件中写入内容
-		logger.Println("工作模式：", mode)
+		logger.Printf("工作模式: %s, 新增文件数量: %d, 损坏文件数量: %d, 更新文件数量: %d \n", mode, addCount, brokenCount, updateCount)
+		for ss := range brokenFiles {
+			logger.Printf("-- %s \n", ss)
+		}
 	}()
 
 	fmt.Println("初始化数据库")
@@ -142,7 +166,16 @@ func verifyMD5InFolder(mainDirectory string, threadCount int, mode string) {
 	go func() {
 		for mess := range resultQueue {
 			//fmt.Println(message)
-			b.Add(1, mess)
+			b.Add(1, mess.message)
+			totalCount++
+			if mess.status == 2 {
+				updateCount++
+			} else if mess.status == 3 {
+				brokenCount++
+				brokenFiles = append(brokenFiles, mess.relativePath)
+			} else if mess.status == 4 {
+				addCount++
+			}
 		}
 	}()
 	wg.Wait()
@@ -204,22 +237,31 @@ func countFilesInDirectory(db *sql.DB, directory string, filters ...func(db *sql
 	return count, files
 }
 
-func dealSingleFile(wg *sync.WaitGroup, taskQueue, resultQueue chan string, mainDirectory string, db *sql.DB) {
+func dealSingleFile(wg *sync.WaitGroup, taskQueue chan string, resultQueue chan opRecord, mainDirectory string, db *sql.DB) {
 	defer wg.Done()
 	for filePath := range taskQueue {
 		currentMD5, err := calculateMD5(filePath)
 		if err != nil {
-			resultQueue <- fmt.Sprintf("文件 %s 计算MD5失败: %v", filePath, err)
+			resultQueue <- opRecord{
+				status:  0,
+				message: fmt.Sprintf("文件 %s 计算MD5失败: %v", filePath, err),
+			}
 			continue
 		}
 		currentModTime, err := getFileModificationTime(filePath)
 		if err != nil {
-			resultQueue <- fmt.Sprintf("文件 %s 获取修改时间失败: %v", filePath, err)
+			resultQueue <- opRecord{
+				status:  0,
+				message: fmt.Sprintf("文件 %s 获取修改时间失败: %v", filePath, err),
+			}
 			continue
 		}
 		relativePath, err := filepath.Rel(mainDirectory, filePath)
 		if err != nil {
-			resultQueue <- fmt.Sprintf("计算相对路径失败: %v", err)
+			resultQueue <- opRecord{
+				status:  0,
+				message: fmt.Sprintf("计算相对路径失败: %v", err),
+			}
 			continue
 		}
 
@@ -228,26 +270,41 @@ func dealSingleFile(wg *sync.WaitGroup, taskQueue, resultQueue chan string, main
 		err = db.QueryRow(`SELECT md5, modification_time FROM files_md5 WHERE file_path = ?`, relativePath).Scan(&dbMD5, &dbModTimeStr)
 
 		if err == sql.ErrNoRows {
-			resultQueue <- fmt.Sprintf("未找到对应的MD5记录，已添加: %s", filePath)
+			resultQueue <- opRecord{
+				message: fmt.Sprintf("未找到对应的MD5记录，已添加: %s", filePath),
+				status:  4,
+			}
 			dbLock.Lock()
 			_, _ = db.Exec(`INSERT INTO files_md5 (file_path, md5, modification_time) VALUES (?, ?, ?)`,
 				relativePath, currentMD5, currentModTime)
 			dbLock.Unlock()
 		} else if err != nil {
-			resultQueue <- fmt.Sprintf("查询数据库失败: %v", err)
+			resultQueue <- opRecord{
+				message: fmt.Sprintf("查询数据库失败: %v", err),
+				status:  0,
+			}
 		} else {
 			if currentModTime == dbModTimeStr {
 				if currentMD5 == dbMD5 {
-					resultQueue <- fmt.Sprintf("MD5与数据库一致: %s", filePath)
+					resultQueue <- opRecord{
+						message: fmt.Sprintf("MD5与数据库一致: %s", filePath),
+						status:  1,
+					}
 				} else {
-					resultQueue <- fmt.Sprintf("文件损坏: %s", filePath)
+					resultQueue <- opRecord{
+						message: fmt.Sprintf("文件损坏: %s", filePath),
+						status:  3,
+					}
 				}
 			} else {
 				dbLock.Lock()
 				_, _ = db.Exec(`UPDATE files_md5 SET md5 = ?, modification_time = ? WHERE file_path = ?`,
 					currentMD5, currentModTime, relativePath)
 				dbLock.Unlock()
-				resultQueue <- fmt.Sprintf("文件已修改，MD5已更新: %s", filePath)
+				resultQueue <- opRecord{
+					message: fmt.Sprintf("文件已修改，MD5已更新: %s", filePath),
+					status:  2,
+				}
 			}
 		}
 	}
@@ -256,30 +313,38 @@ func dealSingleFile(wg *sync.WaitGroup, taskQueue, resultQueue chan string, main
 func main() {
 
 	var mode string
-	fmt.Println("请输入工作模式:")
-	fmt.Println(" 1. 全量扫描验证")
-	fmt.Println(" 2. 增量扫描验证")
-	fmt.Println(" 3. 随机抽取验证（1/20概率）")
-	fmt.Println(" 4. 随机抽取验证（1/10概率）")
-	fmt.Println(" 5. 随机抽取验证（1/2概率）")
-
-	_, err := fmt.Scan(&mode)
-	if err != nil {
-		fmt.Println("读取输入失败:", err)
-		return
-	}
-
 	var folder string
-	err = jpath.InputFolderAndCheck(&folder)
-	if err != nil {
-		return
+
+	args := os.Args
+	fmt.Println(args, len(args))
+	if len(args) >= 3 {
+		mode = args[1]
+		folder = args[2]
+		err := jpath.CheckFolderLeagl(&folder)
+		if err != nil {
+			return
+		}
+		verifyMD5InFolder(folder, 10, mode)
+	} else {
+		fmt.Println("请输入工作模式:")
+		fmt.Println(" 1. 全量扫描验证")
+		fmt.Println(" 2. 增量扫描验证")
+		fmt.Println(" 3. 随机抽取验证（1/20概率）")
+		fmt.Println(" 4. 随机抽取验证（1/10概率）")
+		fmt.Println(" 5. 随机抽取验证（1/2概率）")
+		_, err := fmt.Scan(&mode)
+		if err != nil {
+			return
+		}
+		err = jpath.InputFolderAndCheck(&folder)
+		if err != nil {
+			return
+		}
+		verifyMD5InFolder(folder, 10, mode)
+		fmt.Println("按 Enter 键退出...")
+		reader := bufio.NewReader(os.Stdin)
+		input, _ := reader.ReadString('\n')
+		input, _ = reader.ReadString('\n')
+		input = strings.TrimSpace(input)
 	}
-
-	verifyMD5InFolder(folder, 10, mode)
-	fmt.Println("按 Enter 键退出...")
-
-	reader := bufio.NewReader(os.Stdin)
-	input, _ := reader.ReadString('\n')
-	input, _ = reader.ReadString('\n')
-	input = strings.TrimSpace(input)
 }
