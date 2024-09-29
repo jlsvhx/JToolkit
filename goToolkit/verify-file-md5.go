@@ -23,8 +23,9 @@ import (
 )
 
 const dbName = "file_integrity_check_by_go.db"
+const logName = "verify.log"
 
-var excludeFileNames = []string{dbName}
+var excludeFileNames = []string{dbName, logName}
 var dbLock sync.Mutex
 
 type opRecord struct {
@@ -123,7 +124,7 @@ func verifyMD5InFolder(mainDirectory string, threadCount int, mode string) {
 		seconds := end.Sub(start).Seconds()
 		fmt.Println("\n****MD5计算和验证任务完成，总耗时为", jmath.RoundWithPrecision(seconds, 2), "秒****")
 		// 定义日志文件名
-		logFile := path.Join(mainDirectory, "verify.log")
+		logFile := path.Join(mainDirectory, logName)
 		// 打开文件，如果文件不存在则创建，追加内容
 		file, err := os.OpenFile(logFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0666)
 		if err != nil {
