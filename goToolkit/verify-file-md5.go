@@ -23,10 +23,17 @@ import (
 )
 
 const dbName = "file_integrity_check_by_go.db"
-const logName = "verify.log"
+const logName = "file_integrity_check_by_go.log"
 
 var excludeFileNames = []string{dbName, logName}
 var dbLock sync.Mutex
+var optionMap = map[string]string{
+	"1": "全量扫描验证",
+	"2": "增量扫描验证",
+	"3": "随机抽取验证（1/20）",
+	"4": "随机抽取验证（1/10）",
+	"5": "随机抽取验证（1/2）",
+}
 
 type opRecord struct {
 	message      string
@@ -107,11 +114,11 @@ func verifyMD5InFolder(mainDirectory string, threadCount int, mode string) {
 	} else if mode == "2" {
 		filters = append(filters, filterExistFile)
 	} else if mode == "3" {
-		filters = append(filters, genRandomFileFilter(20))
+		filters = append(filters, genRandomFileFilter(16))
 	} else if mode == "4" {
-		filters = append(filters, genRandomFileFilter(10))
+		filters = append(filters, genRandomFileFilter(8))
 	} else if mode == "5" {
-		filters = append(filters, genRandomFileFilter(2))
+		filters = append(filters, genRandomFileFilter(4))
 	} else {
 		fmt.Println("工作模式无效")
 		return
@@ -134,7 +141,7 @@ func verifyMD5InFolder(mainDirectory string, threadCount int, mode string) {
 		// 创建一个新的日志记录器
 		logger := log.New(file, "INFO: ", log.Ldate|log.Ltime)
 		// 向日志文件中写入内容
-		logger.Printf("工作模式: %s, 新增文件数量: %d, 损坏文件数量: %d, 更新文件数量: %d \n", mode, addCount, brokenCount, updateCount)
+		logger.Printf("工作模式: %s, 新增文件数量: %d, 损坏文件数量: %d, 更新文件数量: %d, 总扫描文件数: %d \n", optionMap[mode], addCount, brokenCount, updateCount, totalCount)
 		for ss := range brokenFiles {
 			logger.Printf("-- %s \n", ss)
 		}
@@ -272,7 +279,7 @@ func dealSingleFile(wg *sync.WaitGroup, taskQueue chan string, resultQueue chan 
 
 		if err == sql.ErrNoRows {
 			resultQueue <- opRecord{
-				message: fmt.Sprintf("未找到对应的MD5记录，已添加: %s", filePath),
+				message: fmt.Sprintf("文件新增: %s", relativePath),
 				status:  4,
 			}
 			dbLock.Lock()
@@ -288,12 +295,12 @@ func dealSingleFile(wg *sync.WaitGroup, taskQueue chan string, resultQueue chan 
 			if currentModTime == dbModTimeStr {
 				if currentMD5 == dbMD5 {
 					resultQueue <- opRecord{
-						message: fmt.Sprintf("MD5与数据库一致: %s", filePath),
+						message: fmt.Sprintf("文件: %s", relativePath),
 						status:  1,
 					}
 				} else {
 					resultQueue <- opRecord{
-						message: fmt.Sprintf("文件损坏: %s", filePath),
+						message: fmt.Sprintf("文件损坏: %s", relativePath),
 						status:  3,
 					}
 				}
@@ -303,7 +310,7 @@ func dealSingleFile(wg *sync.WaitGroup, taskQueue chan string, resultQueue chan 
 					currentMD5, currentModTime, relativePath)
 				dbLock.Unlock()
 				resultQueue <- opRecord{
-					message: fmt.Sprintf("文件已修改，MD5已更新: %s", filePath),
+					message: fmt.Sprintf("文件修改: %s", relativePath),
 					status:  2,
 				}
 			}
@@ -330,9 +337,9 @@ func main() {
 		fmt.Println("请输入工作模式:")
 		fmt.Println(" 1. 全量扫描验证")
 		fmt.Println(" 2. 增量扫描验证")
-		fmt.Println(" 3. 随机抽取验证（1/20概率）")
-		fmt.Println(" 4. 随机抽取验证（1/10概率）")
-		fmt.Println(" 5. 随机抽取验证（1/2概率）")
+		fmt.Println(" 3. 随机抽取验证（1/16概率）")
+		fmt.Println(" 4. 随机抽取验证（1/8概率）")
+		fmt.Println(" 5. 随机抽取验证（1/4概率）")
 		_, err := fmt.Scan(&mode)
 		if err != nil {
 			return
