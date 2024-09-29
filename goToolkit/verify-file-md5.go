@@ -10,6 +10,7 @@ import (
 	"goToolkit/jmath"
 	"goToolkit/jpath"
 	"io"
+	"math/rand"
 	"os"
 	"path/filepath"
 	"sync"
@@ -69,14 +70,14 @@ func initializeDB(dbPath string) error {
 	return err
 }
 
-func pushFilesToProcess(mainDirectory string, taskQueue chan string) {
+func pushFilesToProcess(db *sql.DB, mainDirectory string, taskQueue chan string, filters ...func(db *sql.DB, mainDirectory, fileName, filePath string) int) {
 	defer close(taskQueue)
 	filepath.Walk(mainDirectory, func(path string, info os.FileInfo, err error) error {
 		if err != nil || info.IsDir() {
 			return err
 		}
-		for _, exclude := range excludeFileNames {
-			if info.Name() == exclude || filepath.Ext(info.Name()) == ".sfv" {
+		for _, filter := range filters {
+			if filter(db, mainDirectory, info.Name(), path) == 1 {
 				return nil
 			}
 		}
@@ -85,9 +86,16 @@ func pushFilesToProcess(mainDirectory string, taskQueue chan string) {
 	})
 }
 
-func verifyMD5InFolder(mainDirectory string, threadCount int) {
+func verifyMD5InFolder(mainDirectory string, threadCount int, mode string) {
 	taskQueue := make(chan string, 10)
 	resultQueue := make(chan string, 10)
+
+	filters := []func(db *sql.DB, mainDirectory, fileName, filePath string) int{filterExcludeFileAndSfv}
+	if mode == "2" {
+		filters = append(filters, filterExistFile)
+	} else if mode == "3" {
+		filters = append(filters, filterRandomFile)
+	}
 
 	start := time.Now()
 	defer func() {
@@ -102,18 +110,18 @@ func verifyMD5InFolder(mainDirectory string, threadCount int) {
 		fmt.Println("数据库初始化失败:", err)
 		return
 	}
-
-	count := countFilesInDirectory(mainDirectory)
-	b := Bar.NewBar(0, count)
-	go pushFilesToProcess(mainDirectory, taskQueue)
-
-	var wg sync.WaitGroup
 	db, err := sql.Open("sqlite3", dbPath)
 	if err != nil {
 		fmt.Println("数据库连接失败:", err)
 		return
 	}
 	defer db.Close() // 确保在函数结束时关闭连接
+
+	count := countFilesInDirectory(db, mainDirectory, filters...)
+	b := Bar.NewBar(0, count)
+	go pushFilesToProcess(db, mainDirectory, taskQueue, filters...)
+
+	var wg sync.WaitGroup
 
 	fmt.Println("开始处理任务队列\n")
 	for i := 0; i < threadCount; i++ {
@@ -133,14 +141,48 @@ func verifyMD5InFolder(mainDirectory string, threadCount int) {
 	fmt.Println("\n**MD5计算和验证任务完成**")
 }
 
-func countFilesInDirectory(directory string) int {
+// 需要过滤掉的返回1，需要处理的返回0
+func filterExcludeFileAndSfv(db *sql.DB, mainDirectory string, fileName string, filePath string) int {
+	if filepath.Ext(fileName) == ".sfv" {
+		return 1
+	}
+	for _, exclude := range excludeFileNames {
+		if fileName == exclude {
+			return 1
+		}
+	}
+	return 0
+}
+
+func filterExistFile(db *sql.DB, mainDirectory string, fileName string, filePath string) int {
+
+	relpath, _ := filepath.Rel(mainDirectory, filePath)
+	var dbMD5 string
+	var dbModTimeStr string
+	err := db.QueryRow(`SELECT md5, modification_time FROM files_md5 WHERE file_path = ?`, relpath).Scan(&dbMD5, &dbModTimeStr)
+	if err == sql.ErrNoRows {
+		return 0
+	}
+	return 1
+}
+
+func filterRandomFile(db *sql.DB, mainDirectory string, fileName string, filePath string) int {
+	ra := rand.Intn(10)
+	if ra < 1 {
+		return 0
+	} else {
+		return 1
+	}
+}
+
+func countFilesInDirectory(db *sql.DB, directory string, filters ...func(db *sql.DB, mainDirectory string, fileName string, filePath string) int) int {
 	count := 0
 	filepath.Walk(directory, func(path string, info os.FileInfo, err error) error {
 		if err != nil || info.IsDir() {
 			return err
 		}
-		for _, exclude := range excludeFileNames {
-			if info.Name() == exclude || filepath.Ext(info.Name()) == ".sfv" {
+		for _, filter := range filters {
+			if filter(db, directory, info.Name(), path) == 1 {
 				return nil
 			}
 		}
@@ -200,12 +242,25 @@ func dealSingleFile(wg *sync.WaitGroup, taskQueue, resultQueue chan string, main
 }
 
 func main() {
+
+	var mode string
+	fmt.Println("请输入工作模式:")
+	fmt.Println(" 1. 全量扫描验证")
+	fmt.Println(" 2. 增量扫描验证")
+	fmt.Println(" 3. 随机抽取验证（1/10概率）")
+	_, err := fmt.Scan(&mode)
+	if err != nil {
+		fmt.Println("读取输入失败:", err)
+		return
+	}
+
 	var folder string
-	err := jpath.InputFolderAndCheck(&folder)
+	err = jpath.InputFolderAndCheck(&folder)
 	if err != nil {
 		return
 	}
-	verifyMD5InFolder(folder, 10)
+
+	verifyMD5InFolder(folder, 10, mode)
 	fmt.Println("按 Enter 键退出...")
 
 	reader := bufio.NewReader(os.Stdin)
